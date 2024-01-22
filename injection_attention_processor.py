@@ -1,7 +1,7 @@
 from diffusers.models.attention_processor import Attention, AttnProcessor
 import torch
 from typing import Optional, List
-
+import numpy as np
 
 def get_attention_scores(
     self, query: torch.Tensor, key: torch.Tensor, attention_mask: torch.Tensor = None
@@ -17,7 +17,6 @@ def get_attention_scores(
     Returns:
         `torch.Tensor`: The attention probabilities/scores.
     """
-    print('COOL')
     dtype = query.dtype
     if self.upcast_attention:
         query = query.float()
@@ -39,6 +38,9 @@ def get_attention_scores(
         beta=beta,
         alpha=self.scale,
     )
+
+    # 
+    # print(attention_scores.shape)
     del baddbmm_input
 
     if self.upcast_softmax:
@@ -57,9 +59,12 @@ class InjectionAttnProcessor(AttnProcessor):
                  sigma_t, 
                  context_tensor) -> None:
         super().__init__()
+        self.t = 0 
         self.sigma_t = sigma_t
         self.context_tensor = context_tensor
-        self.test = 'HI'
+
+    def get_scale(self, t):
+        return 0.3 * np.log(1 + self.sigma_t[t])
     
     def __call__(
         self,
@@ -74,7 +79,9 @@ class InjectionAttnProcessor(AttnProcessor):
         """
         Copied heavily from https://github.com/huggingface/diffusers/blob/ac61eefc9f2fbd4d2190d5673a4fcd77da9a93ab/src/diffusers/models/attention_processor.py. 
         """
-        print(self.test)
+        weight_scale = self.get_weight_scale(self.t)
+        self.t += 1
+
         residual = hidden_states
 
         args = (scale,)
