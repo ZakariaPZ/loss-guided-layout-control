@@ -9,8 +9,8 @@ scheduler = LMSDiscreteScheduler.from_config(pipeline.scheduler.config)
 pipeline.scheduler = scheduler
 generator = torch.Generator(device="cuda").manual_seed(647)
 
-print(pipeline.scheduler.sigmas)
-print(pipeline.scheduler.timesteps)
+# print(pipeline.scheduler.sigmas)
+# print(pipeline.scheduler.timesteps)
 
 # processor = InjectionAttnProcessor(pipeline.scheduler.sigmas, None)
 
@@ -21,13 +21,13 @@ for block in pipeline.unet.up_blocks:
 
             for transformer_block in module.transformer_blocks:
                 transformer_block.attn2.get_attention_scores = types.MethodType(get_attention_scores, transformer_block.attn2)
-                transformer_block.attn2.set_processor(InjectionAttnProcessor(pipeline.scheduler.sigmas, None))
+                transformer_block.attn2.set_processor(InjectionAttnProcessor(pipeline.scheduler.sigmas, torch.zeros((64, 64))))
 
 # mid block
-for module in pipeline.mid_block.attention:
+for module in pipeline.unet.mid_block.attentions:
     for transformer_block in module.transformer_blocks:
         transformer_block.attn2.get_attention_scores = types.MethodType(get_attention_scores, transformer_block.attn2)
-        transformer_block.attn2.set_processor(InjectionAttnProcessor(pipeline.scheduler.sigmas, None))
+        transformer_block.attn2.set_processor(InjectionAttnProcessor(pipeline.scheduler.sigmas, torch.zeros((64, 64))))
 
 
 for block in pipeline.unet.down_blocks:
@@ -36,7 +36,7 @@ for block in pipeline.unet.down_blocks:
 
             for transformer_block in module.transformer_blocks:
                 transformer_block.attn2.get_attention_scores = types.MethodType(get_attention_scores, transformer_block.attn2)
-                transformer_block.attn2.set_processor(InjectionAttnProcessor(pipeline.scheduler.sigmas, None))
+                transformer_block.attn2.set_processor(InjectionAttnProcessor(pipeline.scheduler.sigmas, torch.zeros((64, 64))))
 
 pipeline('A colorful parrot and a red hat', generator=generator).images[0].save('astronaut_rides_horse.png')
 

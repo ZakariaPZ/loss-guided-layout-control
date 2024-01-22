@@ -2,9 +2,13 @@ from diffusers.models.attention_processor import Attention, AttnProcessor
 import torch
 from typing import Optional, List
 import numpy as np
+from pprint import pprint
 
 def get_attention_scores(
-    self, query: torch.Tensor, key: torch.Tensor, attention_mask: torch.Tensor = None
+    self, query: torch.Tensor, 
+    key: torch.Tensor, 
+    attention_mask: torch.Tensor = None,
+    context_tensor: torch.Tensor = None
 ) -> torch.Tensor:
     r"""
     Compute the attention scores.
@@ -39,8 +43,15 @@ def get_attention_scores(
         alpha=self.scale,
     )
 
-    # 
-    # print(attention_scores.shape)
+    # Assuming bs of 1 (double check how the dims change)
+    # Each will be of shape (nheads * bs, hidden_dim, ntokens)
+    attention_scores_cond, attention_scores_uncond = attention_scores.chunk(2, dim=0)
+    # print('Conditional dims: ', attention_scores_cond.shape)
+    # print('Unconditional dims: ', attention_scores_uncond.shape)
+    # print('Total: ', attention_scores.shape)
+
+    # attention_scores_cond += context_tensor
+
     del baddbmm_input
 
     if self.upcast_softmax:
@@ -57,15 +68,20 @@ def get_attention_scores(
 class InjectionAttnProcessor(AttnProcessor):
     def __init__(self,
                  sigma_t, 
-                 context_tensor) -> None:
+                 context_tensor: torch.Tensor) -> None:
         super().__init__()
         self.t = 0 
         self.sigma_t = sigma_t
         self.context_tensor = context_tensor
+        self.attention_map = None
 
-    def get_scale(self, t):
-        return 0.3 * np.log(1 + self.sigma_t[t])
+    def get_weight_scale(self, t):
+        return 0.75 * np.log(1 + self.sigma_t[t])
     
+    def resize_context_tensor(self, attention_dim):
+        resize_factor = int(64 // np.sqrt(attention_dim))
+        return self.context_tensor[0::resize_factor, 0::resize_factor]
+
     def __call__(
         self,
         attn: Attention,
@@ -79,8 +95,6 @@ class InjectionAttnProcessor(AttnProcessor):
         """
         Copied heavily from https://github.com/huggingface/diffusers/blob/ac61eefc9f2fbd4d2190d5673a4fcd77da9a93ab/src/diffusers/models/attention_processor.py. 
         """
-        weight_scale = self.get_weight_scale(self.t)
-        self.t += 1
 
         residual = hidden_states
 
@@ -104,6 +118,10 @@ class InjectionAttnProcessor(AttnProcessor):
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
         query = attn.to_q(hidden_states, *args)
+        weight_scale = self.get_weight_scale(self.t)
+        self.t += 1
+        resized_context_tensor = self.resize_context_tensor(query.shape[1])    
+        print('Resized context tensor: ', resized_context_tensor.shape)
 
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
