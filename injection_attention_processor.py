@@ -1,14 +1,17 @@
 from diffusers.models.attention_processor import Attention, AttnProcessor
 import torch
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import numpy as np
-from pprint import pprint
+from utils import IndexTensorPair
+import copy
 
 def get_attention_scores(
     self, query: torch.Tensor, 
     key: torch.Tensor, 
     attention_mask: torch.Tensor = None,
-    context_tensor: torch.Tensor = None
+    context_tensors: List[Tuple[int, torch.Tensor]] = None,
+    injection_weight: float = 0.0,
+    t = None
 ) -> torch.Tensor:
     r"""
     Compute the attention scores.
@@ -40,17 +43,26 @@ def get_attention_scores(
         query,
         key.transpose(-1, -2),
         beta=beta,
-        alpha=self.scale,
+        alpha=1,
+        # alpha=self.scale,
     )
 
     # Assuming bs of 1 (double check how the dims change)
     # Each will be of shape (nheads * bs, hidden_dim, ntokens)
-    attention_scores_cond, attention_scores_uncond = attention_scores.chunk(2, dim=0)
-    # print('Conditional dims: ', attention_scores_cond.shape)
-    # print('Unconditional dims: ', attention_scores_uncond.shape)
-    # print('Total: ', attention_scores.shape)
+    attention_scores_uncond, attention_scores_cond = attention_scores.chunk(2, dim=0)
 
-    # attention_scores_cond += context_tensor
+    if context_tensors and t:
+        if t < 10:
+            for context_pair in context_tensors:
+                context_index = context_pair.index
+                context_tensor = context_pair.tensor
+
+                context_tensor = context_tensor.flatten()
+                nu_t = injection_weight * torch.max(attention_scores_cond[:, :, context_index])
+
+                attention_scores_cond[:, :, context_index] += nu_t * context_tensor[None, ...]
+
+    attention_scores_cond *= self.scale
 
     del baddbmm_input
 
@@ -61,26 +73,39 @@ def get_attention_scores(
     del attention_scores
 
     attention_probs = attention_probs.to(dtype)
+    
+    if t == 49 and context_tensors[0].tensor.shape[0] == 8:
+        np.save('attention_map.npy', attention_probs.detach().cpu().numpy())
 
     return attention_probs
 
 
 class InjectionAttnProcessor(AttnProcessor):
     def __init__(self,
-                 sigma_t, 
-                 context_tensor: torch.Tensor) -> None:
-        super().__init__()
+                 sigma_t,
+                 context_tensors: IndexTensorPair = None,
+                 nu: float = 0.75) -> None:
         self.t = 0 
+        self.nu = nu
         self.sigma_t = sigma_t
-        self.context_tensor = context_tensor
+        self.context_tensors = context_tensors
         self.attention_map = None
 
-    def get_weight_scale(self, t):
-        return 0.75 * np.log(1 + self.sigma_t[t])
+    def get_injection_scale(self):
+        return self.nu * np.log(1 + self.sigma_t[self.t])
     
     def resize_context_tensor(self, attention_dim):
         resize_factor = int(64 // np.sqrt(attention_dim))
-        return self.context_tensor[0::resize_factor, 0::resize_factor]
+        print(resize_factor)
+        resized_context_tensors = copy.deepcopy(self.context_tensors.copy())
+        print(resized_context_tensors[0].tensor.shape)
+        for context_pair in resized_context_tensors:
+            print(context_pair.tensor.shape)
+            context_pair.tensor = context_pair.tensor[0::resize_factor, 0::resize_factor].to('cuda')
+            print(context_pair.tensor.shape)
+            
+
+        return resized_context_tensors
 
     def __call__(
         self,
@@ -118,10 +143,10 @@ class InjectionAttnProcessor(AttnProcessor):
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
         query = attn.to_q(hidden_states, *args)
-        weight_scale = self.get_weight_scale(self.t)
+
+        injection_weight = self.get_injection_scale() 
         self.t += 1
-        resized_context_tensor = self.resize_context_tensor(query.shape[1])    
-        print('Resized context tensor: ', resized_context_tensor.shape)
+        resized_context_tensors = self.resize_context_tensor(query.shape[1])    
 
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
@@ -135,7 +160,8 @@ class InjectionAttnProcessor(AttnProcessor):
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
-        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        attention_probs = attn.get_attention_scores(query, key, attention_mask, resized_context_tensors, injection_weight, self.t)
+        # attention_probs = attn.get_attention_scores(query, key, attention_mask, resized_context_tensors, t=self.t)
 
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
