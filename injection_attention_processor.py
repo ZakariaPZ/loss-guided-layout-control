@@ -44,7 +44,6 @@ def get_attention_scores(
         key.transpose(-1, -2),
         beta=beta,
         alpha=1,
-        # alpha=self.scale,
     )
 
     # Assuming bs of 1 (double check how the dims change)
@@ -161,7 +160,6 @@ class InjectionAttnProcessor(AttnProcessor):
         value = attn.head_to_batch_dim(value)
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask, resized_context_tensors, injection_weight, self.t)
-        # attention_probs = attn.get_attention_scores(query, key, attention_mask, resized_context_tensors, t=self.t)
 
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
