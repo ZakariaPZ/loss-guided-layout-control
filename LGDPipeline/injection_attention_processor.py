@@ -5,8 +5,17 @@ import numpy as np
 from utils import IndexTensorPair
 import copy
 
+
+def resize_maps(self, 
+                weight, 
+                dims=(16, 16)):
+    
+    return torch.nn.functional.interpolate(weight.unsqueeze(0), dims, mode='bilinear').squeeze()
+
+
 def get_attention_scores(
-    self, query: torch.Tensor, 
+    self, 
+    query: torch.Tensor, 
     key: torch.Tensor, 
     attention_mask: torch.Tensor = None,
     context_tensors: List[Tuple[int, torch.Tensor]] = None,
@@ -58,13 +67,17 @@ def get_attention_scores(
                 context_tensor = context_pair.tensor
                 model_attention_map = attention_scores_cond[:, :, context_index].clone()
 
-                context_attention_map['resolution'] = model_attention_map.shape[1]
-                # context_attention_map['map'] = model_attention_map
-
                 context_tensor = context_tensor.flatten()
                 nu_t = injection_weight * torch.max(model_attention_map)
-
                 attention_scores_cond[:, :, context_index] += nu_t * context_tensor[None, ...]
+
+                nheads = model_attention_map.shape[0]
+                attention_map_dim = int(np.sqrt(model_attention_map.shape[1]))
+
+                resized_model_attention_map = self.resize_maps(model_attention_map.view((nheads, attention_map_dim, attention_map_dim)))
+                resized_model_attention_map = resized_model_attention_map.view((nheads, -1))
+                # print(resized_model_attention_map.shape)
+                context_attention_map[context_index].append(resized_model_attention_map)
 
     attention_scores_cond *= self.scale
 
