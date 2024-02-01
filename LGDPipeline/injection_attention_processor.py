@@ -71,15 +71,7 @@ def get_attention_scores(
                 nu_t = injection_weight * torch.max(model_attention_map)
                 attention_scores_cond[:, :, context_index] += nu_t * context_tensor[None, ...]
 
-                nheads = model_attention_map.shape[0]
-                attention_map_dim = int(np.sqrt(model_attention_map.shape[1]))
-
-                resized_model_attention_map = self.resize_maps(model_attention_map.view((nheads, attention_map_dim, attention_map_dim)))
-                resized_model_attention_map = resized_model_attention_map.view((nheads, -1))
-                # print(resized_model_attention_map.shape)
-                context_attention_map[context_index].append(resized_model_attention_map)
-
-    attention_scores_cond *= self.scale
+    attention_scores *= self.scale
 
     del baddbmm_input
 
@@ -90,9 +82,22 @@ def get_attention_scores(
     del attention_scores
 
     attention_probs = attention_probs.to(dtype)
-    
-    # if t == 49 and context_tensors[0].tensor.shape[0] == 8:
-    #     np.save('attention_map.npy', attention_probs.detach().cpu().numpy())
+
+    attention_probs_uncond, attention_probs_cond = attention_probs.chunk(2, dim=0)
+
+    if context_tensors and t:
+
+        for context_pair in context_tensors:
+            context_index = context_pair.index
+            context_tensor = context_pair.tensor
+            model_attention_map = attention_probs_cond[:, :, context_index].clone()
+
+            nheads = model_attention_map.shape[0]
+            attention_map_dim = int(np.sqrt(model_attention_map.shape[1]))
+
+            resized_model_attention_map = self.resize_maps(model_attention_map.view((nheads, attention_map_dim, attention_map_dim)))
+            resized_model_attention_map = resized_model_attention_map.view((nheads, -1))
+            context_attention_map[context_index].append(resized_model_attention_map)
 
     return attention_probs
 
@@ -102,7 +107,7 @@ class InjectionAttnProcessor(AttnProcessor):
                  sigma_t,
                  context_tensors: IndexTensorPair = None,
                  cross_attention_dict: dict = None,
-                 nu: float = 0.75) -> None:
+                 nu: float = 0.6) -> None:
         self.t = 0 
         self.nu = nu
         self.sigma_t = sigma_t
