@@ -6,10 +6,15 @@ import types
 from utils import IndexTensorPair
 import numpy as np
 
-pipeline = LGDPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", ).to('cuda')
+pipeline = LGDPipeline.from_pretrained("CompVis/stable-diffusion-v1-4").to('cuda')
 scheduler = LMSDiscreteScheduler.from_config(pipeline.scheduler.config)
 pipeline.scheduler = scheduler
-generator = torch.Generator(device="cuda").manual_seed(647)
+# generator = torch.Generator(device="cuda").manual_seed(647)
+# generator = torch.Generator(device="cuda").manual_seed(245)
+
+pipeline.safety_checker = None
+pipeline.requires_safety_checker = False
+
 
 pair1 = IndexTensorPair(3, torch.tensor(np.load('parrot.npy')))
 pair2 = IndexTensorPair(7, torch.tensor(np.load('hat.npy')))
@@ -55,11 +60,18 @@ for block in pipeline.unet.up_blocks:
 
                 up_block_cross_attn_no += 1
 
+pair3 = IndexTensorPair(3, torch.tensor(np.load('parrot.npy')))
+pair4 = IndexTensorPair(7, torch.tensor(np.load('hat.npy')))
+
+pairs2 = [pair3, pair4]
+
 pipeline.token_maps = token_attentions
-pipeline.injection_maps = pairs
+pipeline.injection_maps = pairs2
+pipeline.lg_steps = 30
 
-pipeline('A cute dog with a red hat', generator=generator).images[0].save('astronaut_rides_horse.png')
+# pipeline('A cute dog with a red hat on the green grass', generator=generator).images[0].save('astronaut_rides_horse.png')
+pipeline('A cute puppy with a red hat').images[0].save('astronaut_rides_horse.png')
 
-print(pipeline.token_maps)
+# print(pipeline.token_maps)
 # np.save('attention_maps.npy', pipeline.token_maps)
 # print(attentions)

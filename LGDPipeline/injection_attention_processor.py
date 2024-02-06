@@ -61,15 +61,21 @@ def get_attention_scores(
     attention_scores_uncond, attention_scores_cond = attention_scores.chunk(2, dim=0)
 
     if context_tensors and t:
-        if t < 10:
+        if t < 11:
+            conditional_scores = attention_scores_cond.clone() # required to create a view with requires_grad=True
+
             for context_pair in context_tensors:
+
                 context_index = context_pair.index
-                context_tensor = context_pair.tensor
-                model_attention_map = attention_scores_cond[:, :, context_index].clone()
+                context_tensor = context_pair.tensor.clone()
+                model_attention_map = conditional_scores[:, :, context_index].clone()
 
                 context_tensor = context_tensor.flatten()
                 nu_t = injection_weight * torch.max(model_attention_map)
-                attention_scores_cond[:, :, context_index] += nu_t * context_tensor[None, ...]
+
+                conditional_scores[:, :, context_index] += nu_t * context_tensor[None, ...]
+    
+            attention_scores = torch.cat((attention_scores_uncond, conditional_scores), dim=0)
 
     attention_scores *= self.scale
 
@@ -89,7 +95,7 @@ def get_attention_scores(
 
         for context_pair in context_tensors:
             context_index = context_pair.index
-            context_tensor = context_pair.tensor
+            context_tensor = context_pair.tensor.clone()
             model_attention_map = attention_probs_cond[:, :, context_index].clone()
 
             nheads = model_attention_map.shape[0]
@@ -107,7 +113,7 @@ class InjectionAttnProcessor(AttnProcessor):
                  sigma_t,
                  context_tensors: IndexTensorPair = None,
                  cross_attention_dict: dict = None,
-                 nu: float = 0.6) -> None:
+                 nu: float = 0.75) -> None:
         self.t = 0 
         self.nu = nu
         self.sigma_t = sigma_t
@@ -115,13 +121,18 @@ class InjectionAttnProcessor(AttnProcessor):
         self.attention_maps = cross_attention_dict
 
     def get_injection_scale(self):
+        # print('FROM INJECTION: ', self.sigma_t[self.t])
+        # print(self.t)
+        # print(len(self.sigma_t))
         return self.nu * np.log(1 + self.sigma_t[self.t])
     
     def resize_context_tensor(self, attention_dim):
         resize_factor = int(64 // np.sqrt(attention_dim))
-        resized_context_tensors = copy.deepcopy(self.context_tensors.copy())
+        resized_context_tensors = copy.deepcopy(self.context_tensors) # CLONE AGAIN?
+
         for context_pair in resized_context_tensors:
-            context_pair.tensor = context_pair.tensor[0::resize_factor, 0::resize_factor].to('cuda')            
+            
+            context_pair.tensor = context_pair.tensor[0::resize_factor, 0::resize_factor]           
             
         return resized_context_tensors
 

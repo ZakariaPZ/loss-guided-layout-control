@@ -80,11 +80,11 @@ class LGDPipeline(StableDiffusionPipeline):
 
     def resize_context_tensor(self, context_tensor): # change this so that we just cache the 
         resize_factor = 4
-        resized_context_tensor = context_tensor.clone()
+        resized_context_tensor = context_tensor
         resized_context_tensor = resized_context_tensor[0::resize_factor, 0::resize_factor].to('cuda')            
         return resized_context_tensor
     
-    @torch.no_grad()
+    @torch.no_grad() 
     def __call__(
         self,
         prompt: Union[str, List[str]] = None,
@@ -300,91 +300,113 @@ class LGDPipeline(StableDiffusionPipeline):
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
+
+        # remove gradients from unet
+        for name, param in self.unet.named_parameters():
+            param.requires_grad = False
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):   
-                
+
+                latents.requires_grad_(True)
+    
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-                # print("Latent model input shape: ", latent_model_input.shape)
-
-                # predict the noise residual
-                noise_pred = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep_cond=timestep_cond,
-                    cross_attention_kwargs=self.cross_attention_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False,
-                )[0]
-
-                # perform guidance
-                if self.do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
-
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-
-                if callback_on_step_end is not None:
-                    callback_kwargs = {}
-                    for k in callback_on_step_end_tensor_inputs:
-                        callback_kwargs[k] = locals()[k]
-                    callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
-
-                    latents = callback_outputs.pop("latents", latents)
-                    prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
-                    negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
-
-                # print("Latent shape: ", latents.shape) # cfg, channel, height, width
-                # if i < self.lg_steps:
                 
-                if True:
-                    loss = 0
-                    for injection_object in self.injection_maps:
-                        
-                        token = injection_object.index
-                        injection_mask = self.resize_context_tensor(injection_object.tensor)
-                        inverted_injection_mask = 1 - injection_mask
-                        # Average the attention maps into a single, weighted map
-                        token_maps = torch.cat(self.token_maps[token])
-                        np.save('token_maps.npy', token_maps.detach().cpu().numpy())
-                        map_weights = F.softmax(torch.amax(token_maps, dim=-1)).unsqueeze(0) # change softmax to /sum to weight them, because otherwise they are too similar! 
-                        # print("Map weights shape: ", map_weights.shape)
-                        weighted_map = torch.matmul(map_weights, token_maps).squeeze(0)
+                with torch.enable_grad():
 
-                        attention_map_dim = int(np.sqrt(weighted_map.shape[0]))
+                    self.unet.zero_grad()
+                    latents.detach_()
 
-                        # print(injection_mask.shape)
-                        # print(weighted_map.view(attention_map_dim, attention_map_dim).shape)
+                    if (not latent_model_input.requires_grad) and i < self.lg_steps and i > 0:    
+                        latent_model_input.requires_grad = True
 
-                        token_loss = torch.sum(injection_mask * weighted_map.view(attention_map_dim, attention_map_dim))
-                        inverted_token_loss = torch.sum(inverted_injection_mask * weighted_map.view(attention_map_dim, attention_map_dim))
+                    # predict the noise residual
+                    noise_pred = self.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds,
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=self.cross_attention_kwargs,
+                        added_cond_kwargs=added_cond_kwargs,
+                        return_dict=False,
+                    )[0]
 
-                        loss += inverted_token_loss - token_loss
-          
-                        # Set to empty list so that we can accumulate the attention maps for the next iteration from scratch
-                        self.token_maps[token] = []
+                    # perform guidance
+                    if self.do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                        if i == 40:
+                    if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                        noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
 
-                            np.save('attention_map.npy', weighted_map.detach().cpu().numpy())
-                            np.save('map_weights.npy', map_weights.detach().cpu().numpy()) 
-                print(loss)
-                        # print(injection_mask.shape)
+                    if i < self.lg_steps and i > 0:
 
-                
-                # call the callback, if provided
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
-                    if callback is not None and i % callback_steps == 0:
-                        step_idx = i // getattr(self.scheduler, "order", 1)
-                        callback(step_idx, t, latents)
+                        loss = torch.tensor(0.0).to('cuda')
+                        for injection_object in self.injection_maps:
+                            
+                            token = injection_object.index
+                            injection_mask = self.resize_context_tensor(injection_object.tensor.clone())
+                            inverted_injection_mask = 1 - injection_mask.clone() # necessary to clone?
+            
+                            # Average the attention maps into a single, weighted map
+                            token_maps = torch.cat(self.token_maps[token]).clone()
+                            map_weights = F.softmax(torch.amax(token_maps, dim=-1)).unsqueeze(0) # change softmax to /sum to weight them, because otherwise they are too similar! 
+                            weighted_map = torch.matmul(map_weights, token_maps).squeeze(0)
+
+                            attention_map_dim = int(np.sqrt(weighted_map.shape[0]))
+                            token_loss = torch.sum(injection_mask * weighted_map.view(attention_map_dim, attention_map_dim))
+                            inverted_token_loss = torch.sum(inverted_injection_mask * weighted_map.view(attention_map_dim, attention_map_dim))
+
+                            loss = loss + inverted_token_loss - token_loss 
+            
+                            # Set to empty list so that we can accumulate the attention maps for the next iteration from scratch
+                            self.token_maps[token] = []
+
+                        loss.backward()
+                        _, dldz = latent_model_input.grad.chunk(2, dim=0) # first one confirmed 0s
+
+                        print(dldz.shape)
+                        dldz = dldz.squeeze() # CHECK THE SIZE OF DLDZ, AND THEN NORMALIZE 
+
+                        sigma_t = self.scheduler.sigmas[self.scheduler.step_index]
+                        latent_model_input_cond = latent_model_input.chunk(2, dim=0)[1]
+
+                        # alpha = torch.linalg.norm(latents - latent_model_input_cond)/torch.linalg.norm(dldz)
+                        alpha = 0.8
+
+                        print('SHAPE COMP: ', noise_pred.shape, latent_model_input_cond.shape)
+                        print('NUMERATOR: ', torch.linalg.norm(noise_pred - latent_model_input_cond))
+                        print('DENOMINATOR: ', torch.linalg.norm(dldz))
+                        beta = sigma_t * 1/5
+
+                        noise_pred = noise_pred - alpha * beta * dldz
+
+                        print(loss)
+                        print('SCALE: ', alpha * beta)
+
+                    # compute the previous noisy sample x_t -> x_t-1
+                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+
+                    if callback_on_step_end is not None:
+                        callback_kwargs = {}
+                        for k in callback_on_step_end_tensor_inputs:
+                            callback_kwargs[k] = locals()[k]
+                        callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
+
+                        latents = callback_outputs.pop("latents", latents)
+                        prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
+                        negative_prompt_embeds = callback_outputs.pop("negative_prompt_embeds", negative_prompt_embeds)
+
+
+                    # call the callback, if provided
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                        progress_bar.update()
+                        if callback is not None and i % callback_steps == 0:
+                            step_idx = i // getattr(self.scheduler, "order", 1)
+                            callback(step_idx, t, latents)
 
         if not output_type == "latent":
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[
