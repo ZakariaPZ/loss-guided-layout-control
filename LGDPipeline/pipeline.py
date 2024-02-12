@@ -313,6 +313,8 @@ class LGDPipeline(StableDiffusionPipeline):
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+
+                print('LATENT MODEL INPUT SHAPE ', latent_model_input.shape)
                 
                 with torch.enable_grad():
 
@@ -353,7 +355,8 @@ class LGDPipeline(StableDiffusionPipeline):
             
                             # Average the attention maps into a single, weighted map
                             token_maps = torch.cat(self.token_maps[token]).clone()
-                            map_weights = F.softmax(torch.amax(token_maps, dim=-1)).unsqueeze(0) # change softmax to /sum to weight them, because otherwise they are too similar! 
+                            map_weights = F.softmax(torch.mean(token_maps, dim=-1)).unsqueeze(0) # change softmax to /sum to weight them, because otherwise they are too similar! 
+                            # np.save(f'attentions/attention_map_{token}_{t}_{i}.npy', map_weights.detach().cpu().numpy())
                             weighted_map = torch.matmul(map_weights, token_maps).squeeze(0)
 
                             attention_map_dim = int(np.sqrt(weighted_map.shape[0]))
@@ -366,27 +369,19 @@ class LGDPipeline(StableDiffusionPipeline):
                             self.token_maps[token] = []
 
                         loss.backward()
-                        _, dldz = latent_model_input.grad.chunk(2, dim=0) # first one confirmed 0s
 
-                        print(dldz.shape)
-                        dldz = dldz.squeeze() # CHECK THE SIZE OF DLDZ, AND THEN NORMALIZE 
+                        _, dldz = latent_model_input.grad.chunk(2, dim=0) # first one confirmed 0s
+                        dldz = dldz.squeeze() 
 
                         sigma_t = self.scheduler.sigmas[self.scheduler.step_index]
                         latent_model_input_cond = latent_model_input.chunk(2, dim=0)[1]
 
-                        # alpha = torch.linalg.norm(latents - latent_model_input_cond)/torch.linalg.norm(dldz)
-                        alpha = 0.8
+                        # alpha = torch.linalg.norm(noise_pred - latent_model_input_cond)/torch.linalg.norm(dldz)
+                        beta = sigma_t * 8/25 
 
-                        print('SHAPE COMP: ', noise_pred.shape, latent_model_input_cond.shape)
-                        print('NUMERATOR: ', torch.linalg.norm(noise_pred - latent_model_input_cond))
-                        print('DENOMINATOR: ', torch.linalg.norm(dldz))
-                        beta = sigma_t * 1/5
+                        noise_pred = noise_pred + beta * dldz
 
-                        noise_pred = noise_pred - alpha * beta * dldz
-
-                        print(loss)
-                        print('SCALE: ', alpha * beta)
-
+        
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 

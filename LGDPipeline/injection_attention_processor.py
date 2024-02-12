@@ -4,7 +4,7 @@ from typing import Optional, List, Tuple
 import numpy as np
 from utils import IndexTensorPair
 import copy
-
+import matplotlib.pyplot as plt
 
 def resize_maps(self, 
                 weight, 
@@ -22,6 +22,7 @@ def get_attention_scores(
     injection_weight: float = 0.0,
     t = None,
     context_attention_map = None,
+    injection_steps = None
 ) -> torch.Tensor:
     r"""
     Compute the attention scores.
@@ -56,12 +57,10 @@ def get_attention_scores(
         alpha=1,
     )
 
-    # Assuming bs of 1 (double check how the dims change)
-    # Each will be of shape (nheads * bs, hidden_dim, ntokens)
     attention_scores_uncond, attention_scores_cond = attention_scores.chunk(2, dim=0)
 
     if context_tensors and t:
-        if t < 11:
+        if t < injection_steps:
             conditional_scores = attention_scores_cond.clone() # required to create a view with requires_grad=True
 
             for context_pair in context_tensors:
@@ -74,8 +73,16 @@ def get_attention_scores(
                 nu_t = injection_weight * torch.max(model_attention_map)
 
                 conditional_scores[:, :, context_index] += nu_t * context_tensor[None, ...]
-    
             attention_scores = torch.cat((attention_scores_uncond, conditional_scores), dim=0)
+
+
+    if t < injection_steps + 10 and t > injection_steps:
+        for context_pair in context_tensors:
+            context_index = context_pair.index
+            conditional_scores = attention_scores_cond.clone()
+            dim = int(np.sqrt(conditional_scores.shape[1]))
+            plt.imsave(f'attentions/attention_map_{context_index}_{t}_{query.shape[1]}.png', conditional_scores[4, :, context_index].detach().cpu().numpy().reshape((dim, dim)))
+
 
     attention_scores *= self.scale
 
@@ -105,26 +112,26 @@ def get_attention_scores(
             resized_model_attention_map = resized_model_attention_map.view((nheads, -1))
             context_attention_map[context_index].append(resized_model_attention_map)
 
+    print(attention_probs.shape)
     return attention_probs
 
 
 class InjectionAttnProcessor(AttnProcessor):
     def __init__(self,
-                 sigma_t,
+                 scheduler,
+                 injection_steps = 11,
                  context_tensors: IndexTensorPair = None,
                  cross_attention_dict: dict = None,
-                 nu: float = 0.75) -> None:
-        self.t = 0 
+                 nu: float = 0.0) -> None:
+        
+        self.injection_steps = injection_steps
         self.nu = nu
-        self.sigma_t = sigma_t
+        self.scheduler = scheduler
         self.context_tensors = context_tensors
         self.attention_maps = cross_attention_dict
 
     def get_injection_scale(self):
-        # print('FROM INJECTION: ', self.sigma_t[self.t])
-        # print(self.t)
-        # print(len(self.sigma_t))
-        return self.nu * np.log(1 + self.sigma_t[self.t])
+        return self.nu * np.log(1 + self.scheduler.sigmas[self.scheduler.step_index].cpu().numpy())
     
     def resize_context_tensor(self, attention_dim):
         resize_factor = int(64 // np.sqrt(attention_dim))
@@ -174,7 +181,6 @@ class InjectionAttnProcessor(AttnProcessor):
         query = attn.to_q(hidden_states, *args)
 
         injection_weight = self.get_injection_scale() 
-        self.t += 1
         resized_context_tensors = self.resize_context_tensor(query.shape[1])    
 
         if encoder_hidden_states is None:
@@ -189,7 +195,14 @@ class InjectionAttnProcessor(AttnProcessor):
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
-        attention_probs = attn.get_attention_scores(query, key, attention_mask, resized_context_tensors, injection_weight, self.t, self.attention_maps)
+        attention_probs = attn.get_attention_scores(query, 
+                                                    key, 
+                                                    attention_mask, 
+                                                    resized_context_tensors, 
+                                                    injection_weight, 
+                                                    self.scheduler.step_index, 
+                                                    self.attention_maps,
+                                                    self.injection_steps)
 
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
