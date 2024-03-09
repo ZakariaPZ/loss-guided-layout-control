@@ -1,22 +1,16 @@
 import torch
+from torch.nn import functional as F
+import numpy as np
+
 from diffusers import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
 from diffusers.image_processor import PipelineImageInput
 from diffusers.models.embeddings import ImageProjection
-from torch.nn import functional as F
-import numpy as np
-
-from diffusers.utils import (
-    USE_PEFT_BACKEND,
-    deprecate,
-    logging,
-    replace_example_docstring,
-    scale_lora_layers,
-    unscale_lora_layers,
-)
+from diffusers.utils import deprecate
 
 from typing import Optional, List, Union, Dict, Any, Callable
 import inspect
+
 
 def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     """
@@ -76,17 +70,24 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
-class LGDPipeline(StableDiffusionPipeline):
+def resize_context_tensor(context_tensor): # change this so that we just cache the tensor  
+    resize_factor = 4
+    resized_context_tensor = context_tensor
+    resized_context_tensor = resized_context_tensor[0::resize_factor, 0::resize_factor].to('cuda')            
+    return resized_context_tensor
 
-    def resize_context_tensor(self, context_tensor): # change this so that we just cache the 
-        resize_factor = 4
-        resized_context_tensor = context_tensor
-        resized_context_tensor = resized_context_tensor[0::resize_factor, 0::resize_factor].to('cuda')            
-        return resized_context_tensor
+
+class LGDPipeline(StableDiffusionPipeline):
     
     def set_ilgd_params(self, eta, lg_steps):
         self.eta = eta
         self.lg_steps = lg_steps
+
+    def update_noise_pred(self, dldz):
+        sigma_t = self.scheduler.sigmas[self.scheduler.step_index]
+        beta = sigma_t * self.eta
+        noise_pred = noise_pred + beta * dldz
+        return noise_pred
 
     @torch.no_grad() 
     def __call__(
@@ -311,14 +312,10 @@ class LGDPipeline(StableDiffusionPipeline):
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):   
-
-                latents.requires_grad_(True)
     
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-
-                print('LATENT MODEL INPUT SHAPE ', latent_model_input.shape)
                 
                 with torch.enable_grad():
 
@@ -348,44 +345,41 @@ class LGDPipeline(StableDiffusionPipeline):
                         # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
                         noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
 
+                    ### Start loss-guidance
                     if i < self.lg_steps and i > 0:
 
                         loss = torch.tensor(0.0).to('cuda')
-                        for injection_object in self.injection_maps:
+                        for target_attn_map in self.target_attn_maps:
                             
-                            token = injection_object.index
-                            injection_mask = self.resize_context_tensor(injection_object.tensor.clone())
-                            inverted_injection_mask = 1 - injection_mask.clone() # necessary to clone?
+                            token_idx = target_attn_map.idx
+                            target_attn_mask = self.resize_context_tensor(target_attn_map.tensor.clone())
+                            inverted_target_attn_mask = 1 - target_attn_mask.clone() 
             
                             # Average the attention maps into a single, weighted map
-                            token_maps = torch.cat(self.token_maps[token]).clone()
-                            map_weights = F.softmax(torch.mean(token_maps, dim=-1)).unsqueeze(0) # change softmax to /sum to weight them, because otherwise they are too similar! 
-                            # np.save(f'attentions/attention_map_{token}_{t}_{i}.npy', map_weights.detach().cpu().numpy())
-                            weighted_map = torch.matmul(map_weights, token_maps).squeeze(0)
+                            token_attn_maps = torch.cat(self.attn_store[token_idx]).clone()
+                            # change softmax to /sum to weight them, because otherwise they are too similar! 
+                            map_weights = F.softmax(torch.mean(token_attn_maps, dim=-1)).unsqueeze(0) 
+                            weighted_map = torch.matmul(map_weights, token_attn_maps).squeeze(0)
 
-                            attention_map_dim = int(np.sqrt(weighted_map.shape[0]))
-                            token_loss = torch.sum(injection_mask * weighted_map.view(attention_map_dim, attention_map_dim))
-                            inverted_token_loss = torch.sum(inverted_injection_mask * weighted_map.view(attention_map_dim, attention_map_dim))
+                            attn_dim = int(np.sqrt(weighted_map.shape[0]))
+                            # compute the loss between the weighted map and the target attention map
+                            token_loss = torch.sum(target_attn_mask * weighted_map.view(attn_dim, attn_dim))
+                            inverted_token_loss = torch.sum(inverted_target_attn_mask * weighted_map.view(attn_dim, attn_dim))
 
                             loss = loss + inverted_token_loss - token_loss 
             
-                            # Set to empty list so that we can accumulate the attention maps for the next iteration from scratch
-                            self.token_maps[token] = []
+                            # Reset attn_store for this token so that we can accumulate the attention maps for the next iteration from scratch
+                            self.attn_store[token_idx] = []
 
                         loss.backward()
 
-                        _, dldz = latent_model_input.grad.chunk(2, dim=0) # first one confirmed 0s
+                        # first tensor is the gradient of unconditional diffusion (tensor of 0s)
+                        _, dldz = latent_model_input.grad.chunk(2, dim=0)
                         dldz = dldz.squeeze() 
+                        
+                        noise_pred = self.update_noise_pred(dldz)
+                    ### End loss-guidance
 
-                        sigma_t = self.scheduler.sigmas[self.scheduler.step_index]
-                        latent_model_input_cond = latent_model_input.chunk(2, dim=0)[1]
-
-                        # alpha = torch.linalg.norm(noise_pred - latent_model_input_cond)/torch.linalg.norm(dldz)
-                        beta = sigma_t * 8/25 
-
-                        noise_pred = noise_pred + beta * dldz
-
-        
                     # compute the previous noisy sample x_t -> x_t-1
                     latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 

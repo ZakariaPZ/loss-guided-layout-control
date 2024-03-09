@@ -12,13 +12,12 @@ def resize_maps(self,
     
     return torch.nn.functional.interpolate(weight.unsqueeze(0), dims, mode='bilinear').squeeze()
 
-
 def get_attention_scores(
     self, 
     query: torch.Tensor, 
     key: torch.Tensor, 
     attention_mask: torch.Tensor = None,
-    context_tensors: List[Tuple[int, torch.Tensor]] = None,
+    token_injection_tensors: List[Tuple[int, torch.Tensor]] = None,
     injection_weight: float = 0.0,
     t = None,
     context_attention_map = None,
@@ -57,24 +56,34 @@ def get_attention_scores(
         alpha=1,
     )
 
+    ### Inject attention
+    # Only need the conditional attention maps
     attention_scores_uncond, attention_scores_cond = attention_scores.chunk(2, dim=0)
 
-    if context_tensors and t > 0:
-        if t < injection_steps:
-            conditional_scores = attention_scores_cond.clone() # required to create a view with requires_grad=True
+    # Only inject attention for the first few steps to bias the latents
+    if token_injection_tensors and (t > 0 and t < injection_steps):
+        
+        # required to create a view with requires_grad=True
+        conditional_scores = attention_scores_cond.clone() 
 
-            for context_pair in context_tensors:
+        for token_injection_tensor in token_injection_tensors:
 
-                context_index = context_pair.index
-                context_tensor = context_pair.tensor.clone()
-                model_attention_map = conditional_scores[:, :, context_index].clone()
+            token_idx = token_injection_tensor.idx
+            injection_tensor = token_injection_tensor.tensor.clone()
+            model_attention_map = conditional_scores[:, :, token_idx].clone()
 
-                context_tensor = context_tensor.flatten()
-                nu_t = injection_weight * torch.max(model_attention_map)
+            injection_tensor = injection_tensor.flatten()
 
-                conditional_scores[:, :, context_index] += nu_t * context_tensor[None, ...]
-            attention_scores = torch.cat((attention_scores_uncond, conditional_scores), dim=0)
+            # injection_weight * max(QK^T)
+            nu_t = injection_weight * torch.max(model_attention_map) 
 
+            # inject the attention into the appriopriate token's attention map
+            conditional_scores[:, :, token_idx] += nu_t * injection_tensor[None, ...]
+        
+        # recombine the attention scores
+        attention_scores = torch.cat((attention_scores_uncond, conditional_scores), dim=0)
+    ### End injection
+        
     attention_scores *= self.scale
 
     del baddbmm_input
@@ -87,51 +96,55 @@ def get_attention_scores(
 
     attention_probs = attention_probs.to(dtype)
 
+    ### Extract attention maps to attention store (used in pipeline for loss-guidance)
+    # Only need the conditional attention maps
     attention_probs_uncond, attention_probs_cond = attention_probs.chunk(2, dim=0)
 
-    if context_tensors and t > 0:
+    # Record the attention maps in the attention store so that we can compute the loss 
+    # between the attention maps and the target attention maps for loss-guidance
+    if token_injection_tensors and t > 0:
 
-        for context_pair in context_tensors:
-            context_index = context_pair.index
-            context_tensor = context_pair.tensor.clone()
-            model_attention_map = attention_probs_cond[:, :, context_index].clone()
+        for token_injection_tensor in token_injection_tensors:
+            token_idx = token_injection_tensor.idx
+            model_attention_map = attention_probs_cond[:, :, token_idx].clone()
 
             nheads = model_attention_map.shape[0]
             attention_map_dim = int(np.sqrt(model_attention_map.shape[1]))
 
             resized_model_attention_map = self.resize_maps(model_attention_map.view((nheads, attention_map_dim, attention_map_dim)))
             resized_model_attention_map = resized_model_attention_map.view((nheads, -1))
-            context_attention_map[context_index].append(resized_model_attention_map)
-
+            context_attention_map[token_idx].append(resized_model_attention_map)
+    ### End attention extraction
+            
     return attention_probs
 
 
 class InjectionAttnProcessor(AttnProcessor):
     def __init__(self,
-                 scheduler,
-                 injection_steps = 11,
-                 context_tensors: IndexTensorPair = None,
-                 cross_attention_dict: dict = None,
+                 scheduler: object = None,
+                 injection_steps: int = None,
+                 token_injection_tensors: IndexTensorPair = None,
+                 attn_store: dict = None,
                  nu: float = 0.0) -> None:
         
         self.injection_steps = injection_steps
         self.nu = nu
         self.scheduler = scheduler
-        self.context_tensors = context_tensors
-        self.attention_maps = cross_attention_dict
+        self.token_injection_tensors = token_injection_tensors
+        self.attn_store = attn_store
 
     def get_injection_scale(self):
         return self.nu * np.log(1 + self.scheduler.sigmas[self.scheduler.step_index].cpu().numpy())
     
-    def resize_context_tensor(self, attention_dim):
+    def resize_injection_tensors(self, attention_dim):
         resize_factor = int(64 // np.sqrt(attention_dim))
-        resized_context_tensors = copy.deepcopy(self.context_tensors) # CLONE AGAIN?
+        token_injection_tensors = copy.deepcopy(self.token_injection_tensors) 
 
-        for context_pair in resized_context_tensors:
+        for token_injection_tensor in token_injection_tensors:
             
-            context_pair.tensor = context_pair.tensor[0::resize_factor, 0::resize_factor]           
+            token_injection_tensor.tensor = token_injection_tensor.tensor[0::resize_factor, 0::resize_factor]           
             
-        return resized_context_tensors
+        return token_injection_tensors
 
     def __call__(
         self,
@@ -171,7 +184,8 @@ class InjectionAttnProcessor(AttnProcessor):
         query = attn.to_q(hidden_states, *args)
 
         injection_weight = self.get_injection_scale() 
-        resized_context_tensors = self.resize_context_tensor(query.shape[1])    
+        attn_dim = query.shape[1]
+        token_injection_tensors = self.resize_injection_tensors(attn_dim)    
 
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
@@ -188,10 +202,10 @@ class InjectionAttnProcessor(AttnProcessor):
         attention_probs = attn.get_attention_scores(query, 
                                                     key, 
                                                     attention_mask, 
-                                                    resized_context_tensors, 
+                                                    token_injection_tensors, 
                                                     injection_weight, 
                                                     self.scheduler.step_index, 
-                                                    self.attention_maps,
+                                                    self.attn_store,
                                                     self.injection_steps)
 
         hidden_states = torch.bmm(attention_probs, value)
