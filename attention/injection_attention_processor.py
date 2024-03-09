@@ -1,10 +1,14 @@
-from diffusers.models.attention_processor import Attention, AttnProcessor
 import torch
-from typing import Optional, List, Tuple
 import numpy as np
+import matplotlib.pyplot as plt
+
+from typing import Optional, List, Tuple
 from utils import IndexTensorPair
 import copy
-import matplotlib.pyplot as plt
+
+from diffusers.models.attention_processor import Attention, AttnProcessor
+
+
 
 def resize_maps(self, 
                 weight, 
