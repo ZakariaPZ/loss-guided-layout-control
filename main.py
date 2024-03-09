@@ -13,6 +13,7 @@ import argparse
 
 def run_lgd(bbox_corners: List[Tuple[int, int, int, int]], 
             indices: List[int],
+            prompt: str,
             lg_steps: int = 25,
             injection_steps: int = 11, 
             eta: float = 8/25, 
@@ -83,17 +84,20 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
     pipeline.attn_store = attn_store
     pipeline.target_attn_maps = token_lg_tensors
 
-    pipeline('A dog standing next to a stick', num_inference_steps=50).images[0].save('astronaut_rides_horse.png')
+    pipeline(prompt, num_inference_steps=50).images[0].save(f'{prompt}.png')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run LGD')
     parser.add_argument('--bbox_corners', type=int, nargs='+', help='List of bounding box corners')
-    parser.add_argument('--indices', type=int, nargs='+', help='List of indices')
-    parser.add_argument('--lg_steps', type=int, default=25, help='Number of LGD steps')
+    parser.add_argument('--indices', type=int, nargs='+', help='List containing the indices associating prompt tokens \
+                                                                with bounding boxes. The indices should be in the same \
+                                                                order as the bounding boxes.')
+    parser.add_argument('--lg_steps', type=int, default=25, help='Number of loss-guidance steps')
     parser.add_argument('--injection_steps', type=int, default=11, help='Number of injection steps')
-    parser.add_argument('--eta', type=float, default=8/25, help='Eta value')
-    parser.add_argument('--nu', type=float, default=0.75, help='Nu value')
-    
+    parser.add_argument('--eta', type=float, default=8/25, help='Loss-guidance value')
+    parser.add_argument('--nu', type=float, default=0.75, help='Injection strength')
+    parser.add_argument('--prompt', type=str, help='The Stable Diffusion prompt to use.')
+
     args = parser.parse_args()
 
     if len(args.bbox_corners) is None:
@@ -102,5 +106,14 @@ if __name__ == "__main__":
         raise ValueError('The number of corners is invalid. You must provide the four corners\
                           as [bottom_left_x, bottom_left_y, width, height].')
 
-    run_lgd(args.bbox_corners, args.indices, args.lg_steps, args.injection_steps, args.eta, args.nu)
+    if prompt is None:
+        raise ValueError('You must provide a prompt.')
+
+    run_lgd(bbox_corners=args.bbox_corners, 
+            indices=args.indices, 
+            prompt=args.prompt,
+            lg_steps=args.lg_steps, 
+            injection_steps=args.injection_steps, 
+            eta=args.eta, 
+            nu=args.nu)
     
