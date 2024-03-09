@@ -59,7 +59,7 @@ def get_attention_scores(
 
     attention_scores_uncond, attention_scores_cond = attention_scores.chunk(2, dim=0)
 
-    if context_tensors and t:
+    if context_tensors and t > 0:
         if t < injection_steps:
             conditional_scores = attention_scores_cond.clone() # required to create a view with requires_grad=True
 
@@ -75,15 +75,6 @@ def get_attention_scores(
                 conditional_scores[:, :, context_index] += nu_t * context_tensor[None, ...]
             attention_scores = torch.cat((attention_scores_uncond, conditional_scores), dim=0)
 
-
-    if t < injection_steps + 10 and t > injection_steps:
-        for context_pair in context_tensors:
-            context_index = context_pair.index
-            conditional_scores = attention_scores_cond.clone()
-            dim = int(np.sqrt(conditional_scores.shape[1]))
-            plt.imsave(f'attentions/attention_map_{context_index}_{t}_{query.shape[1]}.png', conditional_scores[4, :, context_index].detach().cpu().numpy().reshape((dim, dim)))
-
-
     attention_scores *= self.scale
 
     del baddbmm_input
@@ -98,7 +89,7 @@ def get_attention_scores(
 
     attention_probs_uncond, attention_probs_cond = attention_probs.chunk(2, dim=0)
 
-    if context_tensors and t:
+    if context_tensors and t > 0:
 
         for context_pair in context_tensors:
             context_index = context_pair.index
@@ -112,7 +103,6 @@ def get_attention_scores(
             resized_model_attention_map = resized_model_attention_map.view((nheads, -1))
             context_attention_map[context_index].append(resized_model_attention_map)
 
-    print(attention_probs.shape)
     return attention_probs
 
 
