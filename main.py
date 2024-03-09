@@ -106,7 +106,7 @@ if __name__ == "__main__":
         raise ValueError('The number of corners is invalid. You must provide the four corners\
                           as [bottom_left_x, bottom_left_y, width, height].')
 
-    if prompt is None:
+    if args.prompt is None:
         raise ValueError('You must provide a prompt.')
 
     run_lgd(bbox_corners=args.bbox_corners, 
