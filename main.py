@@ -1,13 +1,23 @@
+import torch
+import numpy as np
+
+import types
+from typing import List, Tuple
+from utils import IndexTensorPair
+
 from diffusers import LMSDiscreteScheduler
 from LGDPipeline.pipeline import LGDPipeline
 from attention.injection_attention_processor import InjectionAttnProcessor, get_attention_scores, resize_maps
-import torch
-import types
-from utils import IndexTensorPair
-import numpy as np
+import argparse
 
 
-def run_lgd(lg_steps, injection_steps, eta, nu, bbox_corners, indices):
+def run_lgd(bbox_corners: List[Tuple[int, int, int, int]], 
+            indices: List[int],
+            lg_steps: int = 25,
+            injection_steps: int = 11, 
+            eta: float = 8/25, 
+            nu: float = 0.75):
+    
     pipeline = LGDPipeline.from_pretrained("CompVis/stable-diffusion-v1-4").to('cuda')
     scheduler = LMSDiscreteScheduler.from_config(pipeline.scheduler.config)
     pipeline.scheduler = scheduler
@@ -70,8 +80,27 @@ def run_lgd(lg_steps, injection_steps, eta, nu, bbox_corners, indices):
                                                                                 injection_steps=injection_steps, 
                                                                                 nu=nu))
 
-
     pipeline.attn_store = attn_store
     pipeline.target_attn_maps = token_lg_tensors
 
     pipeline('A dog standing next to a stick', num_inference_steps=50).images[0].save('astronaut_rides_horse.png')
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Run LGD')
+    parser.add_argument('--bbox_corners', type=int, nargs='+', help='List of bounding box corners')
+    parser.add_argument('--indices', type=int, nargs='+', help='List of indices')
+    parser.add_argument('--lg_steps', type=int, default=25, help='Number of LGD steps')
+    parser.add_argument('--injection_steps', type=int, default=11, help='Number of injection steps')
+    parser.add_argument('--eta', type=float, default=8/25, help='Eta value')
+    parser.add_argument('--nu', type=float, default=0.75, help='Nu value')
+    
+    args = parser.parse_args()
+
+    if len(args.bbox_corners) is None:
+        raise ValueError('You must provide the bounding corners as [bottom_left_x, bottom_left_y, width, height].')
+    elif len(args.bbox_corners) % 4 != 0:
+        raise ValueError('The number of corners is invalid. You must provide the four corners\
+                          as [bottom_left_x, bottom_left_y, width, height].')
+
+    run_lgd(args.bbox_corners, args.indices, args.lg_steps, args.injection_steps, args.eta, args.nu)
+    
