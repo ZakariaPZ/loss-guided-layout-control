@@ -84,6 +84,10 @@ class LGDPipeline(StableDiffusionPipeline):
         resized_context_tensor = resized_context_tensor[0::resize_factor, 0::resize_factor].to('cuda')            
         return resized_context_tensor
     
+    def set_ilgd_params(self, eta, lg_steps):
+        self.eta = eta
+        self.lg_steps = lg_steps
+
     @torch.no_grad() 
     def __call__(
         self,
