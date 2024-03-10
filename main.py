@@ -5,11 +5,12 @@ import types
 from typing import List, Tuple
 from utils import IndexTensorPair
 import ast
+import argparse
+import os
 
 from diffusers import LMSDiscreteScheduler
 from LGDPipeline.pipeline import LGDPipeline
 from attention.injection_attention_processor import InjectionAttnProcessor, get_attention_scores, resize_maps
-import argparse
 
 
 def run_lgd(bbox_corners: List[Tuple[int, int, int, int]], 
@@ -85,7 +86,10 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
     pipeline.attn_store = attn_store
     pipeline.target_attn_maps = token_lg_tensors
 
-    pipeline(prompt, num_inference_steps=50).images[0].save(f'{prompt}.png')
+    if not os.path.exists('images'):
+        os.makedirs('images')
+        
+    pipeline(prompt, num_inference_steps=50).images[0].save(f'images/{prompt}.png')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run LGD')
