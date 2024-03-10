@@ -4,6 +4,7 @@ import numpy as np
 import types
 from typing import List, Tuple
 from utils import IndexTensorPair
+import ast
 
 from diffusers import LMSDiscreteScheduler
 from LGDPipeline.pipeline import LGDPipeline
@@ -23,7 +24,7 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
     scheduler = LMSDiscreteScheduler.from_config(pipeline.scheduler.config)
     pipeline.scheduler = scheduler
 
-    pipeline.set_params(eta=eta, lg_steps=lg_steps)
+    pipeline.set_ilgd_params(eta=eta, lg_steps=lg_steps)
     injection_steps = injection_steps
     nu = nu
 
@@ -88,8 +89,8 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run LGD')
-    parser.add_argument('--bbox_corners', type=int, nargs='+', help='List of bounding box corners')
-    parser.add_argument('--indices', type=int, nargs='+', help='List containing the indices associating prompt tokens \
+    parser.add_argument('--bbox_corners', type=ast.literal_eval, nargs='+', help='List of bounding box corners')
+    parser.add_argument('--indices', type=ast.literal_eval, nargs='+', help='List containing the indices associating prompt tokens \
                                                                 with bounding boxes. The indices should be in the same \
                                                                 order as the bounding boxes.')
     parser.add_argument('--lg_steps', type=int, default=25, help='Number of loss-guidance steps')
@@ -99,18 +100,18 @@ if __name__ == "__main__":
     parser.add_argument('--prompt', type=str, help='The Stable Diffusion prompt to use.')
 
     args = parser.parse_args()
+    bbox_corners = args.bbox_corners[0]
+    indices = args.indices[0]
 
-    if len(args.bbox_corners) is None:
+    if bbox_corners is None:
         raise ValueError('You must provide the bounding corners as [bottom_left_x, bottom_left_y, width, height].')
-    elif len(args.bbox_corners) % 4 != 0:
-        raise ValueError('The number of corners is invalid. You must provide the four corners\
-                          as [bottom_left_x, bottom_left_y, width, height].')
 
     if args.prompt is None:
         raise ValueError('You must provide a prompt.')
 
-    run_lgd(bbox_corners=args.bbox_corners, 
-            indices=args.indices, 
+
+    run_lgd(bbox_corners=bbox_corners, 
+            indices=indices, 
             prompt=args.prompt,
             lg_steps=args.lg_steps, 
             injection_steps=args.injection_steps, 

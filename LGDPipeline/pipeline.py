@@ -83,7 +83,7 @@ class LGDPipeline(StableDiffusionPipeline):
         self.eta = eta
         self.lg_steps = lg_steps
 
-    def update_noise_pred(self, dldz):
+    def update_noise_pred(self, noise_pred, dldz):
         sigma_t = self.scheduler.sigmas[self.scheduler.step_index]
         beta = sigma_t * self.eta
         noise_pred = noise_pred + beta * dldz
@@ -352,7 +352,7 @@ class LGDPipeline(StableDiffusionPipeline):
                         for target_attn_map in self.target_attn_maps:
                             
                             token_idx = target_attn_map.idx
-                            target_attn_mask = self.resize_context_tensor(target_attn_map.tensor.clone())
+                            target_attn_mask = resize_context_tensor(target_attn_map.tensor.clone())
                             inverted_target_attn_mask = 1 - target_attn_mask.clone() 
             
                             # Average the attention maps into a single, weighted map
@@ -377,7 +377,7 @@ class LGDPipeline(StableDiffusionPipeline):
                         _, dldz = latent_model_input.grad.chunk(2, dim=0)
                         dldz = dldz.squeeze() 
                         
-                        noise_pred = self.update_noise_pred(dldz)
+                        noise_pred = self.update_noise_pred(noise_pred, dldz)
                     ### End loss-guidance
 
                     # compute the previous noisy sample x_t -> x_t-1
