@@ -37,7 +37,7 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
         # convert corners to a binary mask
         x, y, w, h = corners
         mat = np.zeros((64, 64))
-        mat[y:y+h, x:x+w] = 1
+        mat[y:y+h+1, x:x+w+1] = 1
         bbox_mat = IndexTensorPair(idx, torch.tensor(mat))
         token_injection_tensors.append(bbox_mat)
         token_lg_tensors.append(bbox_mat)
