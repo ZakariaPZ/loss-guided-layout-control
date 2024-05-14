@@ -18,8 +18,9 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
             prompt: str,
             lg_steps: int = 25,
             injection_steps: int = 11, 
-            eta: float = 8/25, 
-            nu: float = 0.75):
+            eta: float = 12/25, 
+            nu: float = 0.75,
+            seed: int = 0):
     
     pipeline = LGDPipeline.from_pretrained("CompVis/stable-diffusion-v1-4").to('cuda')
     scheduler = LMSDiscreteScheduler.from_config(pipeline.scheduler.config)
@@ -42,7 +43,7 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
         token_lg_tensors.append(bbox_mat)
 
         # initialize the attention store for each token
-        attn_store[idx] = []
+        attn_store[idx] = [] 
 
     # Down blocks
     for block in pipeline.unet.down_blocks:
@@ -88,8 +89,9 @@ def run_lgd(bbox_corners: List[Tuple[int, int, int, int]],
 
     if not os.path.exists('images'):
         os.makedirs('images')
-        
-    pipeline(prompt, num_inference_steps=50).images[0].save(f'images/{prompt}.png')
+
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    pipeline(prompt, num_inference_steps=50, generator=generator, guidance_scale=7.5).images[0].save(f'images/{prompt}.png')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run LGD')
@@ -99,13 +101,15 @@ if __name__ == "__main__":
                                                                 order as the bounding boxes.')
     parser.add_argument('--lg_steps', type=int, default=25, help='Number of loss-guidance steps')
     parser.add_argument('--injection_steps', type=int, default=11, help='Number of injection steps')
-    parser.add_argument('--eta', type=float, default=8/25, help='Loss-guidance value')
+    parser.add_argument('--eta', type=float, default=12/25, help='Loss-guidance value')
     parser.add_argument('--nu', type=float, default=0.75, help='Injection strength')
     parser.add_argument('--prompt', type=str, help='The Stable Diffusion prompt to use.')
+    parser.add_argument('--seed', type=int, default=0, help='Random seed')
 
     args = parser.parse_args()
     bbox_corners = args.bbox_corners[0]
     indices = args.indices[0]
+    seed = args.seed
 
     if bbox_corners is None:
         raise ValueError('You must provide the bounding corners as [bottom_left_x, bottom_left_y, width, height].')
@@ -113,6 +117,8 @@ if __name__ == "__main__":
     if args.prompt is None:
         raise ValueError('You must provide a prompt.')
 
+    print(args.nu)
+    print(args.eta)
 
     run_lgd(bbox_corners=bbox_corners, 
             indices=indices, 
@@ -120,5 +126,5 @@ if __name__ == "__main__":
             lg_steps=args.lg_steps, 
             injection_steps=args.injection_steps, 
             eta=args.eta, 
-            nu=args.nu)
-    
+            nu=args.nu,
+            seed=seed)

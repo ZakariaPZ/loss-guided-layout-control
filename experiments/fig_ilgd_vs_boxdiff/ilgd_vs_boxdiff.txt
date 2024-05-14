@@ -1,0 +1,6 @@
+a donut and a carrot
+nu: 0.75
+injection_steps: 11
+eta: 12/25
+lg_steps: 25
+

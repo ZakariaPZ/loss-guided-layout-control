@@ -162,7 +162,6 @@ class InjectionAttnProcessor(AttnProcessor):
         """
         Copied heavily from https://github.com/huggingface/diffusers/blob/ac61eefc9f2fbd4d2190d5673a4fcd77da9a93ab/src/diffusers/models/attention_processor.py. 
         """
-
         residual = hidden_states
 
         args = (scale,)
