@@ -6,3 +6,6 @@ python main.py --bbox "[[3, 20, 25, 39],[32, 26, 29, 31]]" --indices "[3, 5]" --
 
 a giraffe on a field
 python main.py --bbox "[[4, 6, 23, 56]]" --indices "[2]" --prompt "a giraffe on a field" --seed 10 --lg_steps 25 --injection_steps 11 --nu 0.75 --eta 0.48
+
+a bown and a spoon
+python3 main.py --bbox "[[3, 11, 29, 28],[43, 4, 9, 42]]" --indices "[2, 5]" --prompt "a bowl and a spoon" --seed 2 --lg_steps 25 --injection_steps 11 --nu 0.75 --eta 0.48
