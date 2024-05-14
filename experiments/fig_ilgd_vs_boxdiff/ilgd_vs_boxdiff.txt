@@ -1,7 +1,3 @@
 a donut and a carrot
-nu: 0.75
-injection_steps: 11
-eta: 12/25
-lg_steps: 25
-seed: 5
+python main.py --bbox "[[2, 33, 28, 28],[37, 4, 9, 56]]" --indices "[2, 5]" --prompt "a donut and a carrot" --seed 5 --lg_steps 25 --injection_steps 11 --nu 0.75 --eta 0.48
 
