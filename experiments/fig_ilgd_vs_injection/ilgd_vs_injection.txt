@@ -1,0 +1,2 @@
+a balloon and a cake and a frame, high quality, photography
+python main.py --bbox "[[2, 38, 22, 22],[35, 33, 25, 28],[27, 3, 32, 19]]" --indices "[2, 5, 8]" --prompt "a balloon and a cake and a frame, high quality, photography" --seed 10 --lg_steps 25 --injection_steps 11 --nu 0.75 --eta 0.48
