@@ -4,7 +4,9 @@ Zakaria Patel, Kirill Serkh
 
 Paper: https://arxiv.org/abs/2405.14101
 
-![](https://github.com/ZakariaPZ/loss-guided-layout-control/blob/main/diffusion_animation.gif)
+<p align="center">
+  <img src="https://github.com/ZakariaPZ/loss-guided-layout-control/blob/main/diffusion_animation.gif" alt="iLGD Example"/>
+</p>
 
 ### Usage
 To use iLGD, you must specify the indices of the tokens in the prompt you would like to apply it to. For instance, for the prompt "a donut and a carrot", we apply iLGD on the tokens "donut" and "carrot" as follows:
